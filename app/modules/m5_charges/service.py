@@ -22,8 +22,10 @@ def compute_charges(run_id: str) -> dict:
         raise DomainError("NO_WEIGHTS", "该运行还没有计费重", 409)
     waybills = {row["waybill_no"]: row for row in store.waybills(run_id)}
     index_map = rates.index()
+    locked = store.locked_waybills(run_id)
 
     lines: list[dict] = []
+    skipped_locked = 0
     for weight in weights:
         if weight["source"] == billable.UNBILLED:
             continue
@@ -35,6 +37,11 @@ def compute_charges(run_id: str) -> dict:
             index_map, waybill["carrier"], waybill["service"], waybill["zone"], pickup
         )
         if card is None:
+            continue
+        revision = int(weight.get("revision") or 1)
+        if weight["waybill_no"] in locked:
+            # 已核账单：重算不得改金额。账单行由 store 原样保留，这里只计跳过数。
+            skipped_locked += 1
             continue
         steps = int(weight["steps"])
         first = zone.first_amount(card)
@@ -65,19 +72,33 @@ def compute_charges(run_id: str) -> dict:
             "insurance_amount": str(insurance),
             "total_amount": str(amount),
             "codes": ",".join(sort_codes(row_codes)),
+            "locked": 0,
+            "locked_at": "",
+            "weight_revision": revision,
         })
 
+    # replace_charge_lines 内部会把已锁定行原样写回，金额与核定时一致
     store.replace_charge_lines(run_id, lines)
-    grand = money.total([Decimal(line["total_amount"]) for line in lines])
+    grand = money.total([Decimal(row["total_amount"]) for row in store.charge_lines(run_id)])
     now = manifest.utc_now_iso()
     store.upsert_run(run_id, {"amount_total": str(grand), "updated_at": now})
     store.add_stage(run_id, "charges", now)
     return {
         "run_id": run_id,
-        "billed": len(lines),
+        "billed": len(store.charge_lines(run_id)),
+        "recalculated": len(lines),
+        "skipped_locked": skipped_locked,
         "amount_total": str(grand),
         "rate_digest": rates.rate_digest(),
     }
+
+
+def lock_charge(run_id: str, waybill_no: str) -> dict:
+    """核定一票账单：加锁后任何重算都不得改动其金额。"""
+    if not store.weight_line(run_id, waybill_no):
+        raise DomainError("WAYBILL_NOT_FOUND", f"运单不存在：{waybill_no}", 404)
+    changed = store.lock_charge_line(run_id, waybill_no, manifest.utc_now_iso())
+    return {"run_id": run_id, "waybill_no": waybill_no, "locked": True, "changed": changed}
 
 
 def lines(run_id: str) -> list[dict]:

@@ -34,7 +34,16 @@ WEIGHT_UNITS = {
     "克": Decimal("0.001"),
     "t": Decimal("1000"),
     "吨": Decimal("1000"),
+    # 承运商按磅回传：国际常衡磅法定换算 1 lb = 0.45359237 kg，全程 Decimal 不引 float
+    "lb": Decimal("0.45359237"),
+    "lbs": Decimal("0.45359237"),
+    "磅": Decimal("0.45359237"),
 }
+
+# 磅→kg 法定换算因子（只在此与单位表各定义一次口径，禁止另抄一份）
+LB_TO_KG = Decimal("0.45359237")
+# 承运商控制重取整台阶：半磅（0.5 lb），仅用于对账参考，不参与客户计费
+CARRIER_STEP_LB = Decimal("0.5")
 
 DIM_UNITS = {
     "cm": Decimal("1"),

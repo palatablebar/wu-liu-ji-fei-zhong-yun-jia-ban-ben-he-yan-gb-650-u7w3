@@ -6,17 +6,17 @@ HEADER = (
 )
 
 ROWS_IN = 27
-ROWS_OK = 15
-ROWS_QUARANTINED = 12
+ROWS_OK = 16
+ROWS_QUARANTINED = 11
 DUPLICATE_HEADERS = 1
 SEGMENTS = 2
 
-AMOUNT_TOTAL = "1521.04"
+AMOUNT_TOTAL = "1543.61"
 PARTS = {
-    "base": "244.82",
-    "step": "1104.48",
+    "base": "257.82",
+    "step": "1112.28",
     "remote": "16.50",
-    "fuel": "119.24",
+    "fuel": "121.01",
     "insurance": "36.00",
 }
 
@@ -37,11 +37,15 @@ WAYBILLS = {
     "WB-1018": {"actual": "3.200", "volume": "5.000", "billable": "5.000", "steps": 8, "total": "36.67"},
     "WB-1019": {"actual": "2.000", "volume": "1.333", "billable": "2.000", "steps": 2, "total": "20.62"},
     "WB-1020": {"actual": "1.000", "volume": "0.167", "billable": "1.000", "steps": 0, "total": "20.62"},
+    # 磅制票：5 lb × 0.45359237 = 2.268 kg；承运商半磅控制重 2.268 kg，
+    # 合同 0.5kg 台阶向上到 2.500 kg，差一个台阶——客户计费以合同公斤侧为准
+    "WB-1022": {"actual": "2.268", "volume": "1.333", "billable": "2.500", "steps": 3, "total": "22.57"},
 }
 
-BILLABLE_TOTAL = "159.000"
+BILLABLE_TOTAL = "161.500"
 VOLUMETRIC_HITS = 9
-ACTUAL_HITS = 6
+ACTUAL_HITS = 7
+POUND_SOURCES = 1
 
 QUARANTINE_CODES = [
     "ARITY_MISMATCH",

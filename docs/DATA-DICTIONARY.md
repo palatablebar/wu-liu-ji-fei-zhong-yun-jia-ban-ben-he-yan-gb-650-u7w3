@@ -20,6 +20,25 @@
 单位表只在 `app/config.py` 定义一份。重量 g=0.001 kg、t=1000 kg；尺寸 m=100 cm、mm=0.1 cm。
 带单位后缀的单元格（如 3200g）先剥后缀，单位列非空时以单位列为准。
 
+### 磅制回传与双台阶裁决（TRAP-27）
+
+承运商按磅（lb/lbs/磅）回传实重，合同按公斤台阶报价。两侧口径不能混用，裁决如下：
+
+- **客户应收只认合同公斤台阶（`tier_basis = contract_kg`）**：磅重先按法定因子
+  `1 lb = 0.45359237 kg`（`config.LB_TO_KG`，全程 Decimal）换算到 0.001 kg，
+  再与体积重取大、按运价版本 `step_weight_kg` 向上进位得到 `billable_kg`。
+- **承运商半磅控制重仅对账留痕**：磅值按 0.5 lb 向上取整（`carrier_control_lb`）
+  并换算成 `carrier_control_kg`，平行记录但绝不反向决定客户计费台阶。
+  沿用磅制台阶会让公斤报价失去合同依据。
+- 例：`5 lb × 0.45359237 = 2.268 kg`，合同 0.5 kg 台阶向上到 `2.500 kg`；
+  承运商控制重为 `5.000 lb / 2.268 kg`，两者差一个台阶，以合同侧 2.500 kg 计费。
+- 每行保留可一起复核的审计链：磅重原值 `raw_weight` + 单位 `weight_unit`、
+  换算式 `conversion_expr`（含因子）、控制重、采用的 `version_id` /
+  `rate_set_version` / `rate_digest`、版次 `revision` 与重算序号 `recalc_seq`。
+- 上游磅重更新：旧值写入 `weight_events`（事件类型 `computed/superseded/updated`）
+  后幂等覆盖，不新增重复行；账单 `locked=1`（已核）后重算只改重量侧并打
+  `LOCKED_WEIGHT_CONFLICT`，账单金额原样保留。
+
 ## 时间
 
 - 存储：UTC，ISO 文本，秒精度，带 Z 后缀

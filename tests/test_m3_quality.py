@@ -70,7 +70,7 @@ def test_metrics_rows_and_pass_rate(pipeline):
     assert metrics["rows_in"] == ROWS_IN
     assert metrics["rows_ok"] == ROWS_OK
     assert metrics["quarantined_lines"] == ROWS_QUARANTINED
-    assert metrics["pass_rate"] == "55.6"
+    assert metrics["pass_rate"] == "59.3"
 
 
 def test_quality_score_bounded(pipeline):

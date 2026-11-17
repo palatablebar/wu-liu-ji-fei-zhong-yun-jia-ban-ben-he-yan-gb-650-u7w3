@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS waybills (
   declared_value TEXT NOT NULL,
   pieces INTEGER NOT NULL,
   codes TEXT NOT NULL DEFAULT '',
+  raw_weight TEXT NOT NULL DEFAULT '',
+  weight_unit TEXT NOT NULL DEFAULT 'kg',
   PRIMARY KEY (run_id, waybill_no)
 );
 CREATE TABLE IF NOT EXISTS quarantine (
@@ -88,7 +90,36 @@ CREATE TABLE IF NOT EXISTS weight_lines (
   billable_kg TEXT NOT NULL DEFAULT '0.000',
   steps INTEGER NOT NULL DEFAULT 0,
   codes TEXT NOT NULL DEFAULT '',
+  weight_unit TEXT NOT NULL DEFAULT 'kg',
+  raw_weight TEXT NOT NULL DEFAULT '',
+  conversion_factor TEXT NOT NULL DEFAULT '1',
+  conversion_expr TEXT NOT NULL DEFAULT '',
+  carrier_control_lb TEXT NOT NULL DEFAULT '',
+  carrier_control_kg TEXT NOT NULL DEFAULT '',
+  tier_basis TEXT NOT NULL DEFAULT 'contract_kg',
+  rate_set_version INTEGER NOT NULL DEFAULT 0,
+  rate_digest TEXT NOT NULL DEFAULT '',
+  revision INTEGER NOT NULL DEFAULT 1,
+  recalc_seq INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (run_id, waybill_no)
+);
+CREATE TABLE IF NOT EXISTS weight_events (
+  run_id TEXT NOT NULL,
+  waybill_no TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  event_type TEXT NOT NULL DEFAULT '',
+  raw_weight TEXT NOT NULL DEFAULT '',
+  weight_unit TEXT NOT NULL DEFAULT '',
+  actual_kg TEXT NOT NULL DEFAULT '',
+  billable_kg TEXT NOT NULL DEFAULT '',
+  carrier_control_lb TEXT NOT NULL DEFAULT '',
+  carrier_control_kg TEXT NOT NULL DEFAULT '',
+  version_id TEXT NOT NULL DEFAULT '',
+  rate_set_version INTEGER NOT NULL DEFAULT 0,
+  rate_digest TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (run_id, waybill_no, seq)
 );
 CREATE TABLE IF NOT EXISTS charge_lines (
   run_id TEXT NOT NULL,
@@ -101,9 +132,40 @@ CREATE TABLE IF NOT EXISTS charge_lines (
   insurance_amount TEXT NOT NULL DEFAULT '0.00',
   total_amount TEXT NOT NULL DEFAULT '0.00',
   codes TEXT NOT NULL DEFAULT '',
+  locked INTEGER NOT NULL DEFAULT 0,
+  locked_at TEXT NOT NULL DEFAULT '',
+  weight_revision INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (run_id, waybill_no)
 );
 """
+
+# 旧库增量列：init_db 建表后逐列补齐，已存在则跳过（SQLite 无 IF NOT EXISTS 加列语法）。
+# 每条 = (表名, 列名, 列定义)
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("weight_lines", "weight_unit", "TEXT NOT NULL DEFAULT 'kg'"),
+    ("weight_lines", "raw_weight", "TEXT NOT NULL DEFAULT ''"),
+    ("weight_lines", "conversion_factor", "TEXT NOT NULL DEFAULT '1'"),
+    ("weight_lines", "conversion_expr", "TEXT NOT NULL DEFAULT ''"),
+    ("weight_lines", "carrier_control_lb", "TEXT NOT NULL DEFAULT ''"),
+    ("weight_lines", "carrier_control_kg", "TEXT NOT NULL DEFAULT ''"),
+    ("weight_lines", "tier_basis", "TEXT NOT NULL DEFAULT 'contract_kg'"),
+    ("weight_lines", "rate_set_version", "INTEGER NOT NULL DEFAULT 0"),
+    ("weight_lines", "rate_digest", "TEXT NOT NULL DEFAULT ''"),
+    ("weight_lines", "revision", "INTEGER NOT NULL DEFAULT 1"),
+    ("weight_lines", "recalc_seq", "INTEGER NOT NULL DEFAULT 0"),
+    ("charge_lines", "locked", "INTEGER NOT NULL DEFAULT 0"),
+    ("charge_lines", "locked_at", "TEXT NOT NULL DEFAULT ''"),
+    ("charge_lines", "weight_revision", "INTEGER NOT NULL DEFAULT 1"),
+    ("waybills", "raw_weight", "TEXT NOT NULL DEFAULT ''"),
+    ("waybills", "weight_unit", "TEXT NOT NULL DEFAULT 'kg'"),
+)
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    for table, column, definition in _ADDED_COLUMNS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def connect() -> sqlite3.Connection:
@@ -128,6 +190,7 @@ def session():
 def init_db() -> None:
     with session() as conn:
         conn.executescript(SCHEMA)
+        _migrate_columns(conn)
 
 
 def rows(sql: str, params: tuple = ()) -> list[dict]:
@@ -249,14 +312,15 @@ def replace_waybills(run_id: str, items: list[dict]) -> None:
         conn.execute("DELETE FROM waybills WHERE run_id = ?", (run_id,))
         conn.executemany(
             "INSERT INTO waybills (run_id, line_no, waybill_no, carrier, service, zone, "
-            "pickup_utc, weight_kg, length_cm, width_cm, height_cm, declared_value, pieces, codes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "pickup_utc, weight_kg, length_cm, width_cm, height_cm, declared_value, pieces, "
+            "codes, raw_weight, weight_unit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id, it["line_no"], it["waybill_no"], it["carrier"], it["service"],
                     it["zone"], it["pickup_utc"], it["weight_kg"], it["length_cm"],
                     it["width_cm"], it["height_cm"], it["declared_value"], it["pieces"],
-                    it["codes"],
+                    it["codes"], it.get("raw_weight", ""), it.get("weight_unit", "kg"),
                 )
                 for it in items
             ],
@@ -265,6 +329,25 @@ def replace_waybills(run_id: str, items: list[dict]) -> None:
 
 def waybills(run_id: str) -> list[dict]:
     return rows("SELECT * FROM waybills WHERE run_id = ? ORDER BY line_no", (run_id,))
+
+
+def upsert_waybill(run_id: str, item: dict) -> None:
+    """上游磅重更新：按业务键 (run_id, waybill_no) 幂等覆盖重量相关列，不新增行。"""
+    columns = (
+        "line_no", "carrier", "service", "zone", "pickup_utc", "weight_kg", "length_cm",
+        "width_cm", "height_cm", "declared_value", "pieces", "codes", "raw_weight",
+        "weight_unit",
+    )
+    cols = [c for c in columns if c in item]
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{c} = excluded.{c}" for c in cols)
+    with session() as conn:
+        conn.execute(
+            f"INSERT INTO waybills (run_id, waybill_no, {', '.join(cols)}) "
+            f"VALUES (?, ?, {placeholders}) "
+            f"ON CONFLICT(run_id, waybill_no) DO UPDATE SET {updates}",
+            (run_id, item["waybill_no"]) + tuple(item[c] for c in cols),
+        )
 
 
 def replace_quarantine(run_id: str, items: list[dict]) -> None:
@@ -286,20 +369,50 @@ def quarantine(run_id: str) -> list[dict]:
     )
 
 
+WEIGHT_LINE_COLUMNS = (
+    "waybill_no", "version_id", "actual_kg", "volumetric_kg", "source", "billable_kg",
+    "steps", "codes", "weight_unit", "raw_weight", "conversion_factor", "conversion_expr",
+    "carrier_control_lb", "carrier_control_kg", "tier_basis", "rate_set_version",
+    "rate_digest", "revision", "recalc_seq",
+)
+
+
 def replace_weight_lines(run_id: str, items: list[dict]) -> None:
+    """整批重写计费重行。重算路径改用 upsert_weight_lines 以保留 revision/审计列。"""
+    placeholders = ", ".join("?" for _ in WEIGHT_LINE_COLUMNS)
     with session() as conn:
         conn.execute("DELETE FROM weight_lines WHERE run_id = ?", (run_id,))
         conn.executemany(
-            "INSERT INTO weight_lines (run_id, waybill_no, version_id, actual_kg, volumetric_kg, "
-            "source, billable_kg, steps, codes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    run_id, it["waybill_no"], it["version_id"], it["actual_kg"],
-                    it["volumetric_kg"], it["source"], it["billable_kg"], it["steps"],
-                    it.get("codes", ""),
-                )
-                for it in items
-            ],
+            f"INSERT INTO weight_lines (run_id, {', '.join(WEIGHT_LINE_COLUMNS)}) "
+            f"VALUES (?, {placeholders})",
+            [(run_id,) + tuple(it.get(c, _weight_default(c)) for c in WEIGHT_LINE_COLUMNS)
+             for it in items],
+        )
+
+
+_WEIGHT_DEFAULTS: dict[str, object] = {
+    "version_id": "", "source": "", "codes": "", "weight_unit": "kg", "raw_weight": "",
+    "conversion_factor": "1", "conversion_expr": "", "carrier_control_lb": "",
+    "carrier_control_kg": "", "tier_basis": "contract_kg", "rate_digest": "",
+    "actual_kg": "0.000", "volumetric_kg": "0.000", "billable_kg": "0.000",
+    "steps": 0, "rate_set_version": 0, "revision": 1, "recalc_seq": 0,
+}
+
+
+def _weight_default(column: str):
+    return _WEIGHT_DEFAULTS.get(column, "")
+
+
+def upsert_weight_line(run_id: str, item: dict) -> None:
+    """单行幂等写：存在则按主键更新审计与结果列，不存在则插入。重算不新增重复行。"""
+    cols = [c for c in WEIGHT_LINE_COLUMNS if c in item]
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{c} = excluded.{c}" for c in cols)
+    with session() as conn:
+        conn.execute(
+            f"INSERT INTO weight_lines (run_id, {', '.join(cols)}) VALUES (?, {placeholders}) "
+            f"ON CONFLICT(run_id, waybill_no) DO UPDATE SET {updates}",
+            (run_id,) + tuple(item[c] for c in cols),
         )
 
 
@@ -307,22 +420,116 @@ def weight_lines(run_id: str) -> list[dict]:
     return rows("SELECT * FROM weight_lines WHERE run_id = ? ORDER BY waybill_no", (run_id,))
 
 
-def replace_charge_lines(run_id: str, items: list[dict]) -> None:
+def weight_line(run_id: str, waybill_no: str) -> dict | None:
+    return one(
+        "SELECT * FROM weight_lines WHERE run_id = ? AND waybill_no = ?",
+        (run_id, waybill_no),
+    )
+
+
+def insert_weight_event(run_id: str, item: dict) -> None:
+    """追加一条重量事件（首算/上游更新/重算）。只追加不更新，历史不可改。"""
+    columns = (
+        "waybill_no", "seq", "event_type", "raw_weight", "weight_unit", "actual_kg",
+        "billable_kg", "carrier_control_lb", "carrier_control_kg", "version_id",
+        "rate_set_version", "rate_digest", "reason", "created_at",
+    )
+    placeholders = ", ".join("?" for _ in columns)
     with session() as conn:
-        conn.execute("DELETE FROM charge_lines WHERE run_id = ?", (run_id,))
-        conn.executemany(
-            "INSERT INTO charge_lines (run_id, waybill_no, version_id, base_amount, step_amount, "
-            "remote_amount, fuel_amount, insurance_amount, total_amount, codes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    run_id, it["waybill_no"], it["version_id"], it["base_amount"],
-                    it["step_amount"], it["remote_amount"], it["fuel_amount"],
-                    it["insurance_amount"], it["total_amount"], it["codes"],
-                )
-                for it in items
-            ],
+        conn.execute(
+            f"INSERT INTO weight_events (run_id, {', '.join(columns)}) "
+            f"VALUES (?, {placeholders})",
+            (run_id,) + tuple(item.get(c, "") for c in columns),
         )
+
+
+def weight_events(run_id: str, waybill_no: str = "") -> list[dict]:
+    if waybill_no:
+        return rows(
+            "SELECT * FROM weight_events WHERE run_id = ? AND waybill_no = ? "
+            "ORDER BY waybill_no, seq",
+            (run_id, waybill_no),
+        )
+    return rows(
+        "SELECT * FROM weight_events WHERE run_id = ? ORDER BY waybill_no, seq", (run_id,)
+    )
+
+
+def next_weight_seq(run_id: str, waybill_no: str) -> int:
+    got = one(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM weight_events "
+        "WHERE run_id = ? AND waybill_no = ?",
+        (run_id, waybill_no),
+    )
+    return int(got["seq"]) + 1 if got else 1
+
+
+CHARGE_LINE_COLUMNS = (
+    "waybill_no", "version_id", "base_amount", "step_amount", "remote_amount",
+    "fuel_amount", "insurance_amount", "total_amount", "codes", "locked", "locked_at",
+    "weight_revision",
+)
+
+
+def replace_charge_lines(run_id: str, items: list[dict]) -> None:
+    """整批重写账单行：已锁定（已核）的运单金额原样保留，绝不被重算覆盖。"""
+    placeholders = ", ".join("?" for _ in CHARGE_LINE_COLUMNS)
+    with session() as conn:
+        locked = {
+            r["waybill_no"]: dict(r)
+            for r in conn.execute(
+                "SELECT * FROM charge_lines WHERE run_id = ? AND locked = 1", (run_id,)
+            ).fetchall()
+        }
+        conn.execute("DELETE FROM charge_lines WHERE run_id = ?", (run_id,))
+        payload = []
+        for it in items:
+            kept = locked.get(it["waybill_no"])
+            if kept is not None:
+                payload.append((run_id,) + tuple(kept[c] for c in CHARGE_LINE_COLUMNS))
+            else:
+                payload.append(
+                    (run_id,) + tuple(it.get(c, _charge_default(c)) for c in CHARGE_LINE_COLUMNS)
+                )
+        # 已锁定但本次未出现在新结果里的行（例如运单被隔离）仍需保留
+        incoming = {it["waybill_no"] for it in items}
+        for waybill_no, kept in locked.items():
+            if waybill_no not in incoming:
+                payload.append((run_id,) + tuple(kept[c] for c in CHARGE_LINE_COLUMNS))
+        conn.executemany(
+            f"INSERT INTO charge_lines (run_id, {', '.join(CHARGE_LINE_COLUMNS)}) "
+            f"VALUES (?, {placeholders})",
+            payload,
+        )
+
+
+_CHARGE_DEFAULTS: dict[str, object] = {
+    "version_id": "", "codes": "", "locked_at": "",
+    "base_amount": "0.00", "step_amount": "0.00", "remote_amount": "0.00",
+    "fuel_amount": "0.00", "insurance_amount": "0.00", "total_amount": "0.00",
+    "locked": 0, "weight_revision": 1,
+}
+
+
+def _charge_default(column: str):
+    return _CHARGE_DEFAULTS.get(column, "")
+
+
+def lock_charge_line(run_id: str, waybill_no: str, locked_at: str) -> bool:
+    """把一票账单标记为已核。返回是否实际发生了状态变化。"""
+    with session() as conn:
+        cur = conn.execute(
+            "UPDATE charge_lines SET locked = 1, locked_at = ? "
+            "WHERE run_id = ? AND waybill_no = ? AND locked = 0",
+            (locked_at, run_id, waybill_no),
+        )
+        return cur.rowcount > 0
+
+
+def locked_waybills(run_id: str) -> set[str]:
+    return {r["waybill_no"] for r in rows(
+        "SELECT waybill_no FROM charge_lines WHERE run_id = ? AND locked = 1", (run_id,)
+    )}
 
 
 def charge_lines(run_id: str) -> list[dict]:

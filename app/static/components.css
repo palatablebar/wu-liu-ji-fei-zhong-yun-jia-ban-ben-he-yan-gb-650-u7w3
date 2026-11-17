@@ -83,6 +83,19 @@
   border-left: 1px solid var(--line-strong);
 }
 
+.cmd.inline { padding: 0; background: transparent; border-left: none; }
+.btn.small { padding: 3px 10px; font-size: 11.5px; }
+.cmd input {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--paper-1);
+  color: var(--ink);
+  min-width: 120px;
+}
+
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field span { color: var(--ink-muted); font-size: 11.5px; }
 .field input, .field select {

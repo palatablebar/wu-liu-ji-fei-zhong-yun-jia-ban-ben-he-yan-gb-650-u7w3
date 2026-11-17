@@ -30,6 +30,29 @@ curl -s http://127.0.0.1:18209/api/reconcile
 
 同一份输入重复导入命中同一个 run_id，行数与合计不变。
 
+## 上游磅重更新与已核账单保护
+
+磅制运单（如 WB-1022，5 lbs）按合同公斤台阶计费：换算 2.268 kg 后进位到 2.500 kg，
+承运商半磅控制重 2.268 kg 仅在证据 CSV 与计费重页留痕对账。
+
+```bash
+# 上游更正某票磅重：旧值入事件历史，重新换算/择版/进位，不新增重复行
+curl -s -X POST http://127.0.0.1:18209/api/weights/recompute \
+  -F waybill_no=WB-1022 -F raw_weight=5.6 -F unit=lb -F reason=承运商更正磅重
+# 查看该票重量事件（computed / superseded / updated）
+curl -s "http://127.0.0.1:18209/api/weights/events?waybill_no=WB-1022"
+# 核定一票账单：锁定后任何重算都不改金额
+curl -s -X POST http://127.0.0.1:18209/api/charges/lock -F waybill_no=WB-1022
+```
+
+账单锁定后再收到磅重更新：重量侧照常重算并打 `LOCKED_WEIGHT_CONFLICT`，
+账单金额保持核定值，需人工裁决（冲红/补差），系统不自动改已核金额。
+完整审计链（磅原值、换算式、控制重、运价版本与摘要、版次）见证据 CSV：
+
+```bash
+curl -s http://127.0.0.1:18209/api/export/evidence.csv | head -2
+```
+
 ## 运价文件校验
 
 ```bash

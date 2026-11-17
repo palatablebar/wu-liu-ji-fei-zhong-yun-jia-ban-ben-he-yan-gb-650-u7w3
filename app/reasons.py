@@ -30,6 +30,13 @@ REASONS: dict[str, dict[str, str]] = {
     "MIN_CHARGE_APPLIED": {"label": "最低收费兜底", "level": INFO},
     "VOLUMETRIC_APPLIED": {"label": "体积重大于实重", "level": INFO},
     "ZONE_REMOTE": {"label": "偏远分区附加", "level": INFO},
+    "LB_TO_KG_CONVERTED": {"label": "磅重已按法定因子换算公斤", "level": INFO},
+    "CARRIER_CONTROL_RECORDED": {"label": "承运商半磅控制重已留痕（仅对账）", "level": INFO},
+    "TIER_CONTRACT_KG": {"label": "按合同公斤台阶计费", "level": INFO},
+    "WEIGHT_UPDATED": {"label": "上游磅重更新触发重算", "level": INFO},
+    "WEIGHT_RERUN": {"label": "计费重重算", "level": INFO},
+    "CHARGE_LOCKED": {"label": "账单已核，重算不得改金额", "level": INFO},
+    "LOCKED_WEIGHT_CONFLICT": {"label": "已核账单与新磅重不一致，待人工裁决", "level": BLOCK},
 }
 
 CODES = tuple(REASONS)

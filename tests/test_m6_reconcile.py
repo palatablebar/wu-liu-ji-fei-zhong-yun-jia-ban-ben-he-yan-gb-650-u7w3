@@ -91,4 +91,4 @@ def test_totals_helpers_agree(pipeline):
     assert totals.conserved(rows) is True
     assert str(totals.grand_total(rows)) == AMOUNT_TOTAL
     assert totals.part_labels()["base"] == "基础运费"
-    assert totals.step_total(rows) == 11
+    assert totals.step_total(rows) == 12

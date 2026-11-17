@@ -42,7 +42,8 @@
   <table class="grid">
     <thead>
       <tr><th>运单号</th><th class="num">基础</th><th class="num">续重</th><th class="num">偏远</th>
-        <th class="num">燃油</th><th class="num">保价</th><th class="num">应收</th><th>版本</th><th>标记</th></tr>
+        <th class="num">燃油</th><th class="num">保价</th><th class="num">应收</th><th>版本</th>
+        <th>重量版次</th><th>核定</th><th>标记</th></tr>
     </thead>
     <tbody>
       {% for row in lines %}
@@ -55,11 +56,22 @@
         <td class="num">{{ row.insurance_amount|money }}</td>
         <td class="num strong">{{ row.total_amount|money }}</td>
         <td class="mono dim">{{ row.version_id }}</td>
+        <td class="num dim">r{{ row.weight_revision }}</td>
+        <td>
+          {% if row.locked %}<span class="dim">已核 {{ row.locked_at[:10] }}</span>
+          {% else %}
+          <form class="cmd inline" data-post="/api/charges/lock" data-target="#lock-out" data-reload="1">
+            <input type="hidden" name="waybill_no" value="{{ row.waybill_no }}">
+            <button type="submit" class="btn small">核定</button>
+          </form>
+          {% endif %}
+        </td>
         <td class="mono dim">{{ row.codes }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <pre id="lock-out" class="out">未核定</pre>
   {% else %}
   <p class="empty">还没有账单行。</p>
   {% endif %}

@@ -3,7 +3,7 @@
 {% block body %}
 <section class="head">
   <h1>计费重</h1>
-  <p class="meta">计费 {{ summary.billed or 0 }} · 体积重择用 {{ summary.volumetric_hits or 0 }} · 实重择用 {{ summary.actual_hits or 0 }} · 合计 {{ summary.billable_total or "0" }} kg</p>
+  <p class="meta">计费 {{ summary.billed or 0 }} · 体积重择用 {{ summary.volumetric_hits or 0 }} · 实重择用 {{ summary.actual_hits or 0 }} · 磅制回传 {{ summary.pound_sources or 0 }} 票 · 合计 {{ summary.billable_total or "0" }} kg</p>
 </section>
 
 <div class="rule-line">{{ rule(200) }}</div>
@@ -11,31 +11,51 @@
 <section class="block">
   <form class="cmd" data-post="/api/weights" data-target="#weights-out" data-reload="1">
     <button type="submit" class="btn">计算</button>
-    <span class="dim">台阶 {{ 0.5 }} kg 向上</span>
+    <span class="dim">合同公斤台阶 0.5 kg 向上；承运商半磅控制重仅对账留痕</span>
   </form>
   <pre id="weights-out" class="out">待计算</pre>
+</section>
+
+<section class="block">
+  <h2>上游磅重更新（单行重算）</h2>
+  <form class="cmd" data-post="/api/weights/recompute" data-target="#recompute-out" data-reload="1">
+    <input name="waybill_no" placeholder="运单号" required>
+    <input name="raw_weight" placeholder="磅重原值，如 11.2" required>
+    <input name="unit" placeholder="lb" value="lb">
+    <input name="reason" placeholder="原因" value="上游磅重更新">
+    <button type="submit" class="btn">重算该票</button>
+  </form>
+  <pre id="recompute-out" class="out">未触发</pre>
+  <p class="dim">旧重量先入事件历史再覆盖；已核账单金额不动，仅登记 LOCKED_WEIGHT_CONFLICT。</p>
 </section>
 
 <div class="rule-line">{{ rule(200) }}</div>
 
 <section class="block">
-  <h2>逐票计费重</h2>
+  <h2>逐票计费重（含磅重原值与换算复核）</h2>
   {% if lines %}
   <table class="grid">
     <thead>
-      <tr><th>运单号</th><th class="num">实重 kg</th><th class="num">体积重 kg</th>
-        <th>来源</th><th class="num">计费重 kg</th><th class="num">段数</th><th>版本</th><th>标记</th></tr>
+      <tr><th>运单号</th><th>原值/单位</th><th class="num">实重 kg</th>
+        <th>换算过程</th><th class="num">承运商控制重</th>
+        <th class="num">体积重 kg</th>
+        <th>来源</th><th class="num">计费重 kg</th><th class="num">段数</th>
+        <th>运价版本</th><th>版次</th><th>标记</th></tr>
     </thead>
     <tbody>
       {% for row in lines %}
       <tr>
         <td class="mono">{{ row.waybill_no }}</td>
+        <td class="mono">{{ row.raw_weight or "—" }} {{ row.weight_unit }}</td>
         <td class="num">{{ row.actual_kg|kg }}</td>
+        <td class="mono dim">{{ row.conversion_expr or "—" }}</td>
+        <td class="num dim">{% if row.carrier_control_lb %}{{ row.carrier_control_lb }} lb / {{ row.carrier_control_kg|kg }} kg{% else %}—{% endif %}</td>
         <td class="num">{{ row.volumetric_kg|kg }}</td>
         <td>{{ labels.get(row.source, row.source) }}</td>
         <td class="num strong">{{ row.billable_kg|kg }}</td>
         <td class="num">{{ row.steps }}</td>
-        <td class="mono dim">{{ row.version_id or "—" }}</td>
+        <td class="mono dim">{{ row.version_id or "—" }}<br><span class="dim">v{{ row.rate_set_version }}</span></td>
+        <td class="num">r{{ row.revision }}.{{ row.recalc_seq }}</td>
         <td class="mono dim">{{ row.codes }}</td>
       </tr>
       {% endfor %}

@@ -33,6 +33,8 @@
 | TRAP-24 | 各分项各自四舍五入 | 分项之和与应收差一分钱 | 分项先量化到分，应收由分项求和得出 | `app/modules/m5_charges/money.py` | `tests/test_m5_charges.py` |
 | TRAP-25 | 同分区两版生效区间相交 | 取到哪版看运气，同一票时高时低 | 先检测重叠，重叠即整份运价集拒绝装载 | `app/modules/m2_rates/version.py` | `tests/test_m2_rates.py` |
 | TRAP-26 | 用旧运价集重新提交 | 旧价覆盖新价，已出账单金额回退 | 运价集版本号比较，低于现有版本直接拒绝 | `app/modules/m2_rates/service.py` | `tests/test_m2_rates.py` |
+| TRAP-27 | 承运商按磅回传、合同按公斤台阶计费 | 直接换算后进位会与承运商半磅控制重差一个台阶；沿用磅制台阶又让公斤报价失去合同依据 | 客户应收只认合同公斤台阶：磅值按 1 lb=0.45359237 kg 精确换算再按 step_weight_kg 进位；承运商半磅控制重平行留痕仅对账；磅原值、换算式、运价版本逐票可复核 | `app/modules/m4_weights/imperial.py` `app/modules/m4_weights/service.py` | `tests/test_pound_tier.py` |
+| TRAP-28 | 上游磅重更新后重跑 | 旧重量被覆盖无法追溯，或重复生成账单、改掉已核金额 | 旧值入 `weight_events` 历史后幂等 upsert（不新增行）；账单 `locked` 后金额原样保留，冲突打 `LOCKED_WEIGHT_CONFLICT` 交人工裁决 | `app/modules/m4_weights/service.py` `app/store.py` `app/modules/m5_charges/service.py` | `tests/test_pound_tier.py` |
 
 ## 对账规则
 
@@ -41,6 +43,8 @@
 - 版本账：可计费运单 = 单选命中 + 无命中或重叠
 - 计费重账：计费行数 = 实重择用 + 体积重择用
 - 重跑：同一份输入得到同一个 run_id，行数与合计不变
+- 磅重更新重算：运单与计费重按业务键幂等 upsert，不新增重复行；旧重量进 `weight_events`；
+  已核（`locked=1`）账单金额在任何重算中保持核定值，差异通过 `LOCKED_WEIGHT_CONFLICT` 暴露
 
 ## 已知不覆盖
 

@@ -43,10 +43,9 @@ def _draft(record: reader.Record, header: list[str], styles: set[str]) -> dict:
     if not waybill_no or not carrier or not service or not zone:
         blocks.append("MISSING_KEY")
 
-    weight_kg, weight_codes, weight_reason = normalize.to_kg(
-        reader.cell(record, header, "weight"),
-        reader.cell(record, header, "weight_unit"),
-    )
+    weight_text = (reader.cell(record, header, "weight") or "").strip()
+    weight_unit_text = (reader.cell(record, header, "weight_unit") or "").strip()
+    weight_kg, weight_codes, weight_reason = normalize.to_kg(weight_text, weight_unit_text)
     take(weight_codes)
     if weight_reason:
         blocks.append(weight_reason)
@@ -88,6 +87,8 @@ def _draft(record: reader.Record, header: list[str], styles: set[str]) -> dict:
         "pickup": pickup,
         "pickup_utc": pickup.isoformat().replace("+00:00", "Z") if pickup else "",
         "weight_kg": weight_kg,
+        "raw_weight": _raw_weight(weight_text, weight_unit_text),
+        "weight_unit": _effective_unit(weight_text, weight_unit_text),
         "length_cm": dims[0],
         "width_cm": dims[1],
         "height_cm": dims[2],
@@ -97,6 +98,19 @@ def _draft(record: reader.Record, header: list[str], styles: set[str]) -> dict:
         "blocks": blocks,
     }
     return draft
+
+
+def _effective_unit(weight_text: str, unit_text: str) -> str:
+    """采信后认定的重量单位：单位列优先，否则取数值后缀，都没有按 kg。"""
+    number, suffix, _codes = normalize.scan_number(weight_text)
+    unit = (unit_text or "").strip().lower() or suffix
+    return unit or "kg"
+
+
+def _raw_weight(weight_text: str, unit_text: str) -> str:
+    """保留磅重原值（数字部分），单位列单独存；无法解析时原样留痕。"""
+    number, _suffix, _codes = normalize.scan_number(weight_text)
+    return str(number) if number is not None else weight_text
 
 
 def import_bytes(raw: bytes, name: str) -> dict:
@@ -151,6 +165,8 @@ def import_bytes(raw: bytes, name: str) -> dict:
             "zone": draft["zone"],
             "pickup_utc": draft["pickup_utc"],
             "weight_kg": str(draft["weight_kg"]),
+            "raw_weight": draft["raw_weight"],
+            "weight_unit": draft["weight_unit"],
             "length_cm": str(draft["length_cm"]),
             "width_cm": str(draft["width_cm"]),
             "height_cm": str(draft["height_cm"]),
